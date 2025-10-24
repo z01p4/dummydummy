@@ -1,0 +1,251 @@
+<div
+  id="chat-modal"
+  class="fixed inset-0 z-50 hidden flex items-center justify-center p-2"
+>
+  <div class="absolute inset-0 bg-black/40"></div>
+
+  <div
+    class="relative w-full max-w-4xl bg-white rounded-2xl shadow-lg overflow-hidden flex flex-col md:flex-row"
+  >
+    <!-- Sidebar partner / list coach -->
+    <div id="partner-sidebar" class="w-full md:w-1/3 p-4 flex-shrink-0">
+      <div class="mb-2">
+        <input
+          id="partner-search"
+          type="search"
+          placeholder="Cari..."
+          class="w-full p-2 rounded border focus:outline-none focus:ring"
+        />
+      </div>
+      <div id="partner-list" class="space-y-2 max-h-[50vh] overflow-auto"></div>
+    </div>
+
+    <!-- Chat area (hidden sampai pilih partner) -->
+    <div id="chat-area" class="w-full md:w-2/3 flex flex-col hidden">
+      <div
+        id="chat-header"
+        class="p-4 border-b flex items-center justify-between"
+      >
+        <span id="chat-with" class="font-semibold"></span>
+        <button
+          id="back-to-list"
+          class="hidden px-2 py-1 bg-gray-200 rounded text-sm md:hidden"
+        >
+          ← Kembali
+        </button>
+      </div>
+      <div
+        id="chat-messages"
+        class="p-4 flex-1 overflow-auto space-y-3 bg-gray-50"
+      ></div>
+      <form id="chat-send-form" class="p-4 border-t flex gap-2">
+        {% csrf_token %}
+        <input
+          id="chat-input"
+          type="text"
+          placeholder="Ketik pesan..."
+          class="flex-1 p-2 rounded border focus:outline-none"
+        />
+        <button
+          type="submit"
+          class="px-4 py-2 rounded bg-orange-700 text-white"
+        >
+          Kirim
+        </button>
+      </form>
+    </div>
+
+    <button
+      id="chat-close"
+      class="absolute top-3 right-3 text-gray-600 text-2xl md:text-xl"
+    >
+      ×
+    </button>
+  </div>
+</div>
+
+<script>
+    (function(){
+      window.CURRENT_USER_ID = {{ request.user.id|default:'null' }};
+      const csrftoken = document.querySelector('[name=csrfmiddlewaretoken]').value;
+
+      const modal = document.getElementById('chat-modal');
+      const closeBtn = document.getElementById('chat-close');
+      const partnerSidebar = document.getElementById('partner-sidebar');
+      const partnerSearch = document.getElementById('partner-search');
+      const partnerList = document.getElementById('partner-list');
+      const chatArea = document.getElementById('chat-area');
+      const chatWith = document.getElementById('chat-with');
+      const backBtn = document.getElementById('back-to-list');
+      const chatMessages = document.getElementById('chat-messages');
+      const chatForm = document.getElementById('chat-send-form');
+      const chatInput = document.getElementById('chat-input');
+
+      let activeRoomId = null;
+      let pollInterval = null;
+
+      window.openChatModal = () => { modal.classList.remove('hidden'); showPartnerSidebar(); loadPartners(); };
+      closeBtn.addEventListener('click', () => { modal.classList.add('hidden'); resetChat(); });
+      backBtn.addEventListener('click', () => showPartnerSidebar());
+      partnerSearch.addEventListener('input', e => loadPartners(e.target.value));
+
+      function resetChat() {
+        activeRoomId = null;
+        chatMessages.innerHTML = '';
+        chatArea.classList.add('hidden'); // sembunyikan chat
+        partnerSidebar.classList.remove('hidden'); // tampilkan list coach
+      }
+
+  function showPartnerSidebar() {
+    chatArea.classList.add('hidden');
+    partnerSidebar.classList.remove('hidden');
+    if(window.innerWidth < 768) backBtn.classList.add('hidden');
+  }
+
+
+    function showChatArea(username) {
+      chatArea.classList.remove('hidden')
+      if (window.innerWidth < 768) {
+        partnerSidebar.classList.add('hidden');
+        backBtn.classList.remove('hidden');
+      } else {
+        partnerSidebar.classList.remove('hidden'); // desktop tetap muncul
+        backBtn.classList.add('hidden');
+      }
+      chatWith.textContent = 'Chat dengan ' + username;
+    }
+
+      async function loadPartners(q='') {
+        const url = new URL('/chat/partners/', window.location.origin);
+        if(q) url.searchParams.set('q', q);
+        const res = await fetch(url.toString());
+        const json = await res.json();
+        partnerList.innerHTML = '';
+        json.partners.forEach(p => {
+          const el = document.createElement('div');
+          el.className = 'w-full p-2 rounded hover:bg-gray-100 cursor-pointer font-medium';
+          el.textContent = p.username;
+          el.onclick = () => selectPartner(p);
+          partnerList.appendChild(el);
+        });
+      }
+
+      async function selectPartner(p) {
+        const res = await fetch(`/chat/room/get_or_create/${p.id}/`);
+        const json = await res.json();
+        activeRoomId = json.room_id;
+        showChatArea(p.username);
+        loadMessages();
+        if (pollInterval) clearInterval(pollInterval);
+        pollInterval = setInterval(loadMessages, 2000);
+      }
+
+      async function loadMessages() {
+        if(!activeRoomId) return;
+        const res = await fetch(`/chat/room/${activeRoomId}/messages/?limit=200`);
+        const json = await res.json();
+        chatMessages.innerHTML = '';
+
+        json.messages.forEach(m => {
+          const isMe = m.sender_id === window.CURRENT_USER_ID;
+          const wrapper = document.createElement('div');
+          wrapper.className = `max-w-[80%] p-2 rounded relative ${isMe ? "ml-auto bg-blue-600 text-white" : "bg-white border"}`;
+
+          let actionsHtml = '';
+          if(isMe){
+            actionsHtml = `
+              <div class="absolute top-1 right-1">
+                <button class="options-btn text-gray-400 font-bold">⋮</button>
+                <div class="options-menu hidden absolute right-0 mt-1 w-20 bg-white border rounded shadow-lg z-50 text-xs">
+                  <div class="edit-option px-2 py-1 cursor-pointer hover:bg-gray-100" data-id="${m.id}">Edit</div>
+                  <div class="delete-option px-2 py-1 cursor-pointer hover:bg-gray-100 text-red-500" data-id="${m.id}">Hapus</div>
+                </div>
+              </div>
+            `;
+          }
+
+          wrapper.innerHTML = `
+            <div class="text-sm message-text">${escapeHtml(m.text)}</div>
+            <div class="text-xs text-gray-500 mt-1">${new Date(m.created_at).toLocaleString()}</div>
+            ${actionsHtml}
+          `;
+          chatMessages.appendChild(wrapper);
+        });
+
+        document.querySelectorAll('.options-btn').forEach(btn => {
+          btn.onclick = () => {
+            const menu = btn.nextElementSibling;
+            menu.classList.toggle('hidden');
+          };
+        });
+        document.querySelectorAll('.edit-option').forEach(btn => {
+          btn.onclick = () => {
+            startEditMessage(btn.dataset.id);
+            document.querySelectorAll('.options-menu').forEach(m => m.classList.add('hidden'));
+          };
+        });
+        document.querySelectorAll('.delete-option').forEach(btn => {
+          btn.onclick = () => {
+            deleteMessage(btn.dataset.id);
+            document.querySelectorAll('.options-menu').forEach(m => m.classList.add('hidden'));
+          };
+        });
+
+        chatMessages.scrollTop = chatMessages.scrollHeight;
+      }
+
+      function startEditMessage(messageId){
+        const btn = document.querySelector(`.edit-option[data-id="${messageId}"]`);
+        const wrapper = btn.closest('div.relative');
+        const currentText = wrapper.querySelector('.message-text').textContent;
+        chatInput.value = currentText;
+        chatInput.focus();
+        chatForm.dataset.editId = messageId;
+      }
+
+      async function deleteMessage(messageId){
+        if(!confirm("Yakin ingin menghapus pesan ini?")) return;
+        const res = await fetch(`/chat/message/${messageId}/delete/`, {
+          method: 'DELETE',
+          headers: { 'X-CSRFToken': csrftoken }
+        });
+        if(!res.ok) return alert("Gagal hapus pesan");
+        loadMessages();
+      }
+
+      chatForm.addEventListener('submit', async function(e){
+        e.preventDefault();
+        if(!activeRoomId) return;
+        const text = chatInput.value.trim();
+        if(!text) return;
+
+        const editId = chatForm.dataset.editId;
+        let url = `/chat/room/${activeRoomId}/send/`;
+        let method = 'POST';
+        let body;
+        let headers = { 'X-CSRFToken': csrftoken };
+
+        if(editId){
+          url = `/chat/message/${editId}/edit/`;
+          method = 'PUT';
+          headers['Content-Type'] = 'application/json';
+          body = JSON.stringify({ text });
+        } else {
+          const formData = new FormData();
+          formData.append('text', text);
+          body = formData;
+        }
+
+        const res = await fetch(url, { method, headers, body });
+        if(!res.ok) return alert('Gagal mengirim pesan');
+
+        chatInput.value = '';
+        delete chatForm.dataset.editId;
+        loadMessages();
+      });
+
+      function escapeHtml(s) {
+        return s.replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c] || c));
+      }
+    })();
+</script>
